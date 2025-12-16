@@ -1,11 +1,15 @@
 """
-Phase 3: 역 상세 라인차트 + 히트맵 대시보드
+Phase 4: 역 상세 라인차트 + 히트맵 + Top N 랭킹 대시보드
 Streamlit 기반 지하철 혼잡도 시각화 앱
 """
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 from pathlib import Path
+
+# 출근/퇴근 시간대 정의 (프로젝트 요구사항 기준)
+RUSH_HOUR_MORNING = ["07:30", "08:00", "08:30", "09:00", "09:30"]
+RUSH_HOUR_EVENING = ["17:30", "18:00", "18:30", "19:00", "19:30"]
 
 # 페이지 설정
 st.set_page_config(
@@ -89,6 +93,58 @@ def get_color_scale_range(df, selected_line):
     vmin = line_data.quantile(0.0)
     vmax = line_data.quantile(1.0)
     return vmin, vmax
+
+# 출퇴근 시간대 랭킹 계산 함수
+def calculate_rush_hour_ranking(df, selected_day, rush_hour_type="morning", top_n=10):
+    """
+    출근/퇴근 시간대의 혼잡한 역 Top N 계산
+    
+    Args:
+        df: 전체 데이터프레임
+        selected_day: 선택된 요일
+        rush_hour_type: "morning" 또는 "evening"
+        top_n: 상위 몇 개 역
+    
+    Returns:
+        ranking_df: 랭킹 데이터프레임
+    """
+    # 시간대 선택
+    time_labels = RUSH_HOUR_MORNING if rush_hour_type == "morning" else RUSH_HOUR_EVENING
+    
+    # 해당 시간대 데이터 필터링
+    rush_df = df[
+        (df['day_type'] == selected_day) &
+        (df['time_label'].isin(time_labels))
+    ]
+    
+    if rush_df.empty:
+        return pd.DataFrame()
+    
+    # 역x방향 단위로 집계
+    grouped_data = []
+    for (station, line, direction), group in rush_df.groupby(['station_name', 'line', 'direction']):
+        avg_crowding = group['crowding'].mean()
+        # 피크 시간: 해당 역×방향에서 가장 혼잡한 시간
+        peak_idx = group['crowding'].idxmax()
+        peak_time = group.loc[peak_idx, 'time_label']
+        
+        grouped_data.append({
+            'station_name': station,
+            'line': line,
+            'direction': direction,
+            'avg_crowding': avg_crowding,
+            'peak_time': peak_time
+        })
+    
+    ranking_df = pd.DataFrame(grouped_data)
+    
+    # 평균 혼잡도 기준 내림차순 정렬 후 Top N
+    ranking_df = ranking_df.sort_values('avg_crowding', ascending=False).head(top_n)
+    
+    # 순위 추가
+    ranking_df.insert(0, 'rank', range(1, len(ranking_df) + 1))
+    
+    return ranking_df.reset_index(drop=True)
 
 # 메인 로직
 def main():
@@ -394,6 +450,126 @@ def main():
     
     except Exception as e:
         st.error(f"❌ 히트맵 생성 중 오류 발생: {e}")
+        import traceback
+        st.code(traceback.format_exc())
+    
+    # ============================================
+    # Top N 랭킹 섹션
+    # ============================================
+    st.markdown("---")
+    st.markdown("## 🏆 혼잡도 Top 10 랭킹")
+    
+    # 토글: 출근/퇴근
+    col_toggle, col_info = st.columns([1, 3])
+    
+    with col_toggle:
+        rush_hour_option = st.radio(
+            "시간대 선택",
+            options=["출근 (07:30-09:30)", "퇴근 (17:30-19:30)"],
+            index=0,
+            horizontal=True
+        )
+        
+        rush_type = "morning" if "출근" in rush_hour_option else "evening"
+    
+    with col_info:
+        st.info(f"💡 {rush_hour_option} 시간대에서 가장 혼잡한 역 Top 10을 표시합니다.")
+    
+    # Top N 슬라이더
+    top_n = st.slider(
+        "표시할 역 수",
+        min_value=5,
+        max_value=20,
+        value=10,
+        step=5,
+        key="top_n_slider"
+    )
+    
+    # 랭킹 계산
+    try:
+        ranking_df = calculate_rush_hour_ranking(df, selected_day, rush_type, top_n=top_n)
+        
+        if ranking_df.empty:
+            st.warning("⚠️ 랭킹 데이터가 없습니다.")
+        else:
+            # 방향 설명 추가
+            ranking_df['direction_display'] = ranking_df.apply(
+                lambda row: get_direction_description(row['line'], row['direction']),
+                axis=1
+            )
+            
+            # 랭킹 테이블
+            st.markdown("### 📋 혼잡도 랭킹 테이블")
+            
+            display_df = ranking_df.copy()
+            display_df['avg_crowding'] = display_df['avg_crowding'].round(1)
+            
+            st.dataframe(
+                display_df[['rank', 'station_name', 'line', 'direction_display', 
+                            'avg_crowding', 'peak_time']].rename(columns={
+                    'rank': '순위',
+                    'station_name': '역명',
+                    'line': '호선',
+                    'direction_display': '방향',
+                    'avg_crowding': '평균 혼잡도',
+                    'peak_time': '피크 시간'
+                }),
+                hide_index=True,
+                use_container_width=True,
+                height=min(400, 40 * len(ranking_df) + 50)
+            )
+            
+            # 막대 차트
+            st.markdown("### 📊 혼잡도 막대 차트")
+            
+            # 라벨 생성
+            chart_df = ranking_df.copy()
+            chart_df['label'] = chart_df['station_name'] + '\n(' + chart_df['line'] + ')'
+            
+            fig_bar = px.bar(
+                chart_df,
+                x='label',
+                y='avg_crowding',
+                color='avg_crowding',
+                color_continuous_scale='Reds',
+                labels={'label': '역', 'avg_crowding': '평균 혼잡도'},
+                title=f"혼잡도 Top {top_n} ({rush_hour_option}, {selected_day})",
+                text='avg_crowding'
+            )
+            
+            # 스타일 설정
+            fig_bar.update_traces(
+                texttemplate='%{text:.1f}',
+                textposition='outside',
+                hovertemplate='<b>%{x}</b><br>평균 혼잡도: %{y:.1f}<extra></extra>'
+            )
+            
+            fig_bar.update_layout(
+                height=500,
+                xaxis_title="",
+                yaxis_title="평균 혼잡도",
+                xaxis=dict(tickangle=-45),
+                showlegend=False
+            )
+            
+            st.plotly_chart(fig_bar, use_container_width=True)
+            
+            # 랭킹에서 역 선택 → 라인차트 연동
+            st.markdown("### 🔍 랭킹에서 역 상세보기")
+            
+            selected_from_ranking = st.selectbox(
+                "랭킹에서 역을 선택하면 위의 라인차트가 업데이트됩니다",
+                options=["선택하세요..."] + ranking_df['station_name'].tolist(),
+                key="ranking_station_selector"
+            )
+            
+            if selected_from_ranking and selected_from_ranking != "선택하세요...":
+                if st.button("라인차트로 이동", key="ranking_to_chart", type="primary"):
+                    st.session_state['selected_station_from_heatmap'] = selected_from_ranking
+                    st.rerun()
+    
+    except Exception as e:
+        st.error(f"❌ 랭킹 생성 중 오류 발생: {e}")
         import traceback
         st.code(traceback.format_exc())
 
