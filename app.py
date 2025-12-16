@@ -1,5 +1,5 @@
 """
-Phase 2: 역 상세 라인차트 대시보드
+Phase 3: 역 상세 라인차트 + 히트맵 대시보드
 Streamlit 기반 지하철 혼잡도 시각화 앱
 """
 import streamlit as st
@@ -26,8 +26,76 @@ def load_data():
     df = pd.read_parquet(data_path)
     return df
 
+# 히트맵 데이터 집계 함수
+def prepare_heatmap_data(df, selected_day, selected_line, selected_direction, sort_by="avg_desc"):
+    """
+    호선의 모든 역에 대한 히트맵 데이터 생성
+    
+    Args:
+        df: 전체 데이터프레임
+        selected_day: 선택된 요일
+        selected_line: 선택된 호선
+        selected_direction: 선택된 방향
+        sort_by: 정렬 기준 ("avg_desc", "name", "code")
+    
+    Returns:
+        pivot_df: 역(행) × 시간대(열) 피벗 테이블
+        station_order: 정렬된 역 리스트
+    """
+    # 선택한 조건으로 필터링
+    filtered = df[
+        (df['day_type'] == selected_day) &
+        (df['line'] == selected_line) &
+        (df['direction'] == selected_direction)
+    ]
+    
+    # 피벗 테이블 생성
+    pivot_df = filtered.pivot_table(
+        index='station_name',
+        columns='time_label',
+        values='crowding',
+        aggfunc='mean'
+    )
+    
+    # 정렬
+    if sort_by == "avg_desc":
+        # 평균 혼잡도 내림차순
+        avg_crowding = pivot_df.mean(axis=1).sort_values(ascending=False)
+        station_order = avg_crowding.index.tolist()
+    elif sort_by == "name":
+        # 가나다순
+        station_order = sorted(pivot_df.index.tolist())
+    elif sort_by == "code":
+        # 역번호순
+        station_codes = filtered[['station_name', 'station_code']].drop_duplicates()
+        station_codes = station_codes.sort_values('station_code')
+        station_order = station_codes['station_name'].tolist()
+    else:
+        station_order = pivot_df.index.tolist()
+    
+    pivot_df = pivot_df.reindex(station_order)
+    
+    return pivot_df, station_order
+
+# 색상 스케일 범위 계산 (호선별)
+def get_color_scale_range(df, selected_line):
+    """
+    호선별 분위수 기반 색상 범위 계산
+    
+    Returns:
+        (vmin, vmax): 색상 스케일 범위
+    """
+    line_data = df[df['line'] == selected_line]['crowding']
+    vmin = line_data.quantile(0.0)
+    vmax = line_data.quantile(1.0)
+    return vmin, vmax
+
 # 메인 로직
 def main():
+    # Session State 초기화
+    if 'selected_station_from_heatmap' not in st.session_state:
+        st.session_state['selected_station_from_heatmap'] = None
+    
     # 데이터 로드
     try:
         df = load_data()
@@ -60,10 +128,19 @@ def main():
     # 필터 3: 출발역 (선택된 호선의 역만 표시)
     stations_in_line = df[df['line'] == selected_line]['station_name'].unique()
     stations_sorted = sorted(stations_in_line)
+    
+    # 히트맵에서 선택된 역이 있으면 해당 역을 기본값으로 설정
+    default_station_idx = 0
+    if st.session_state['selected_station_from_heatmap'] and \
+       st.session_state['selected_station_from_heatmap'] in stations_sorted:
+        default_station_idx = stations_sorted.index(st.session_state['selected_station_from_heatmap'])
+        # 한 번 사용 후 초기화
+        st.session_state['selected_station_from_heatmap'] = None
+    
     selected_station = st.sidebar.selectbox(
         "출발역",
         options=stations_sorted,
-        index=0
+        index=default_station_idx
     )
     
     # 필터 4: 상하구분 (선택된 호선의 방향만 표시)
@@ -213,6 +290,112 @@ def main():
             hide_index=True,
             use_container_width=True
         )
+    
+    # ============================================
+    # 히트맵 섹션
+    # ============================================
+    st.markdown("---")
+    st.markdown("## 📊 역×시간대 혼잡도 히트맵")
+    st.markdown(f"**{selected_line} {direction_display}** 의 모든 역에 대한 시간대별 혼잡도를 한눈에 확인하세요.")
+    
+    # 정렬 옵션
+    col_sort, col_info = st.columns([1, 3])
+    with col_sort:
+        sort_options = {
+            "평균 혼잡도 내림차순": "avg_desc",
+            "가나다순": "name",
+            "역번호순": "code"
+        }
+        sort_label = st.selectbox(
+            "역 정렬 기준",
+            options=list(sort_options.keys()),
+            index=0
+        )
+        sort_by = sort_options[sort_label]
+    
+    with col_info:
+        st.info("💡 히트맵에서 특정 역을 확인하려면 아래에서 역을 선택하면 위의 라인차트가 자동으로 업데이트됩니다.")
+    
+    # 히트맵 데이터 준비
+    try:
+        heatmap_df, station_order = prepare_heatmap_data(
+            df, selected_day, selected_line, selected_direction, sort_by
+        )
+        
+        # 역이 없는 경우 처리
+        if heatmap_df.empty or len(station_order) == 0:
+            st.warning("⚠️ 히트맵을 표시할 데이터가 없습니다.")
+        else:
+            # 색상 범위 계산
+            vmin, vmax = get_color_scale_range(df, selected_line)
+            
+            # 히트맵 생성
+            fig_heatmap = px.imshow(
+                heatmap_df,
+                labels=dict(x="시간대", y="역명", color="혼잡도"),
+                x=heatmap_df.columns,
+                y=heatmap_df.index,
+                color_continuous_scale="RdYlGn_r",  # 빨강-노랑-초록 역순
+                aspect="auto",
+                title=f"역×시간대 혼잡도 히트맵 ({selected_line}, {direction_display}) - {selected_day}",
+                zmin=vmin,
+                zmax=vmax
+            )
+            
+            # 스타일 설정
+            fig_heatmap.update_traces(
+                hovertemplate='<b>역</b>: %{y}<br><b>시간대</b>: %{x}<br><b>혼잡도</b>: %{z:.1f}<extra></extra>'
+            )
+            
+            # 높이를 역 수에 비례하여 조정 (최소 400px, 역당 약 25px)
+            heatmap_height = max(400, len(station_order) * 25)
+            
+            fig_heatmap.update_layout(
+                height=heatmap_height,
+                xaxis_title="시간대",
+                yaxis_title="역명",
+                xaxis=dict(
+                    side="bottom", 
+                    tickangle=-45,
+                    tickmode='linear'
+                ),
+                yaxis=dict(
+                    autorange="reversed"  # 상단부터 표시
+                )
+            )
+            
+            # 히트맵 표시
+            st.plotly_chart(fig_heatmap, use_container_width=True)
+            
+            # 히트맵에서 역 선택 UI
+            st.markdown("### 🔍 히트맵에서 역 상세보기")
+            
+            col_select, col_button = st.columns([3, 1])
+            with col_select:
+                selected_from_heatmap = st.selectbox(
+                    "역을 선택하면 위의 라인차트가 업데이트됩니다",
+                    options=["선택하세요..."] + station_order,
+                    key="heatmap_station_selector"
+                )
+            
+            with col_button:
+                st.write("")  # 여백
+                st.write("")  # 여백
+                if st.button("라인차트로 이동", type="primary"):
+                    if selected_from_heatmap and selected_from_heatmap != "선택하세요...":
+                        st.session_state['selected_station_from_heatmap'] = selected_from_heatmap
+                        st.rerun()
+            
+            # 자동 이동 (버튼 없이 선택만으로)
+            if selected_from_heatmap and selected_from_heatmap != "선택하세요..." and selected_from_heatmap != selected_station:
+                if st.button(f"'{selected_from_heatmap}' 역 상세보기", key="auto_move"):
+                    st.session_state['selected_station_from_heatmap'] = selected_from_heatmap
+                    st.rerun()
+    
+    except Exception as e:
+        st.error(f"❌ 히트맵 생성 중 오류 발생: {e}")
+        import traceback
+        st.code(traceback.format_exc())
 
 if __name__ == "__main__":
     main()
