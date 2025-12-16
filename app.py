@@ -94,6 +94,62 @@ def get_color_scale_range(df, selected_line):
     vmax = line_data.quantile(1.0)
     return vmin, vmax
 
+# KPI 계산 함수
+def calculate_kpi(df, selected_day, selected_line, selected_direction):
+    """
+    선택된 조건에 대한 전체 KPI 계산
+    
+    Args:
+        df: 전체 데이터프레임
+        selected_day: 선택된 요일
+        selected_line: 선택된 호선
+        selected_direction: 선택된 방향
+    
+    Returns:
+        dict: KPI 딕셔너리 또는 None
+    """
+    # 선택된 조건으로 필터링
+    filtered = df[
+        (df['day_type'] == selected_day) &
+        (df['line'] == selected_line) &
+        (df['direction'] == selected_direction)
+    ]
+    
+    if filtered.empty:
+        return None
+    
+    # 전체 평균 혼잡도
+    avg_crowding = filtered['crowding'].mean()
+    
+    # 역별 평균 혼잡도 계산
+    station_avg = filtered.groupby('station_name')['crowding'].mean()
+    max_station = station_avg.idxmax()
+    max_crowding = station_avg.max()
+    
+    # 시간대별 평균 혼잡도 계산하여 피크 시간 찾기
+    time_avg = filtered.groupby('time_label')['crowding'].mean()
+    peak_time = time_avg.idxmax()
+    
+    # 총 역 수
+    total_stations = filtered['station_name'].nunique()
+    
+    # 출퇴근 시간대 평균
+    morning_data = filtered[filtered['time_label'].isin(RUSH_HOUR_MORNING)]
+    evening_data = filtered[filtered['time_label'].isin(RUSH_HOUR_EVENING)]
+    
+    morning_avg = morning_data['crowding'].mean() if not morning_data.empty else 0
+    evening_avg = evening_data['crowding'].mean() if not evening_data.empty else 0
+    
+    return {
+        'avg_crowding': avg_crowding,
+        'max_station': max_station,
+        'max_crowding': max_crowding,
+        'peak_time': peak_time,
+        'total_stations': total_stations,
+        'morning_avg': morning_avg,
+        'evening_avg': evening_avg
+    }
+
 # 출퇴근 시간대 랭킹 계산 함수
 def calculate_rush_hour_ranking(df, selected_day, rush_hour_type="morning", top_n=10):
     """
@@ -210,33 +266,7 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.info("💡 필터를 변경하면 차트가 자동으로 업데이트됩니다.")
     
-    # 데이터 필터링
-    filtered_df = df[
-        (df['day_type'] == selected_day) &
-        (df['line'] == selected_line) &
-        (df['station_name'] == selected_station) &
-        (df['direction'] == selected_direction)
-    ].sort_values('time_order')
-    
-    # 데이터 검증
-    if filtered_df.empty:
-        st.warning("⚠️ 선택한 조건에 해당하는 데이터가 없습니다.")
-        st.stop()
-    
-    # 본문 영역
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("선택된 역", selected_station)
-    with col2:
-        avg_crowding = filtered_df['crowding'].mean()
-        st.metric("평균 혼잡도", f"{avg_crowding:.1f}")
-    with col3:
-        max_crowding = filtered_df['crowding'].max()
-        st.metric("최대 혼잡도", f"{max_crowding:.1f}")
-    
-    st.markdown("---")
-    
-    # 방향 설명 추가 (모든 호선)
+    # 방향 설명 함수 (KPI에서도 사용)
     def get_direction_description(line, direction):
         """각 호선별 방향 설명 추가"""
         direction_info = {
@@ -279,6 +309,95 @@ def main():
         return direction
     
     direction_display = get_direction_description(selected_line, selected_direction)
+    
+    # ============================================
+    # KPI 요약 카드 섹션
+    # ============================================
+    st.markdown("## 📈 핵심 지표 요약")
+    st.markdown(f"**{selected_line} {direction_display}** ({selected_day})")
+    
+    # KPI 계산
+    kpi_data = calculate_kpi(df, selected_day, selected_line, selected_direction)
+    
+    if kpi_data:
+        # 주요 KPI 4개
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric(
+                "총 역 수",
+                f"{kpi_data['total_stations']}개",
+                help="선택한 호선과 방향의 총 역 수"
+            )
+        
+        with col2:
+            st.metric(
+                "전체 평균 혼잡도",
+                f"{kpi_data['avg_crowding']:.1f}",
+                help="모든 역과 시간대의 평균 혼잡도"
+            )
+        
+        with col3:
+            st.metric(
+                "최고 혼잡역",
+                kpi_data['max_station'],
+                f"평균 {kpi_data['max_crowding']:.1f}",
+                help="가장 혼잡한 역 (하루 평균)"
+            )
+        
+        with col4:
+            st.metric(
+                "피크 시간대",
+                kpi_data['peak_time'],
+                help="전체적으로 가장 혼잡한 시간대"
+            )
+        
+        # 출퇴근 시간대 평균
+        col_morning, col_evening = st.columns(2)
+        
+        with col_morning:
+            st.metric(
+                "출근 시간대 평균",
+                f"{kpi_data['morning_avg']:.1f}",
+                help="07:30-09:30 평균 혼잡도"
+            )
+        
+        with col_evening:
+            st.metric(
+                "퇴근 시간대 평균",
+                f"{kpi_data['evening_avg']:.1f}",
+                help="17:30-19:30 평균 혼잡도"
+            )
+    else:
+        st.warning("⚠️ KPI를 계산할 수 있는 데이터가 없습니다.")
+    
+    st.markdown("---")
+    
+    # 데이터 필터링
+    filtered_df = df[
+        (df['day_type'] == selected_day) &
+        (df['line'] == selected_line) &
+        (df['station_name'] == selected_station) &
+        (df['direction'] == selected_direction)
+    ].sort_values('time_order')
+    
+    # 데이터 검증
+    if filtered_df.empty:
+        st.warning("⚠️ 선택한 조건에 해당하는 데이터가 없습니다.")
+        st.stop()
+    
+    # 본문 영역
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("선택된 역", selected_station)
+    with col2:
+        avg_crowding = filtered_df['crowding'].mean()
+        st.metric("평균 혼잡도", f"{avg_crowding:.1f}")
+    with col3:
+        max_crowding = filtered_df['crowding'].max()
+        st.metric("최대 혼잡도", f"{max_crowding:.1f}")
+    
+    st.markdown("---")
     
     # 라인차트 생성
     fig = px.line(
