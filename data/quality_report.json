@@ -1,0 +1,39 @@
+{
+  "timestamp": "2025-12-16T14:34:38.891312",
+  "rows_tidy": 65169,
+  "unique_stations": 283,
+  "unique_station_direction_combinations": 1671,
+  "day_types": [
+    "일요일",
+    "토요일",
+    "평일"
+  ],
+  "lines": [
+    "1호선",
+    "2호선",
+    "3호선",
+    "4호선",
+    "5호선",
+    "6호선",
+    "7호선",
+    "8호선"
+  ],
+  "directions": [
+    "내선",
+    "상선",
+    "외선",
+    "하선"
+  ],
+  "duplicate_key_rows": 0,
+  "crowding_nan_count": 0,
+  "crowding_nan_rate": 0.0,
+  "negative_crowding_count": 0,
+  "crowding_over_200_count": 0,
+  "all_time_zero_station_direction_rows": 42,
+  "crowding_stats": {
+    "min": 0.0,
+    "max": 164.3,
+    "mean": 28.351697893170062,
+    "median": 25.0
+  }
+}
