@@ -19,7 +19,7 @@ st.set_page_config(
 )
 
 # 타이틀
-st.title("🚇 지하철 혼잡도 대시보드 - 역별 분석")
+st.title("🚇 지하철 혼잡도 대시보드")
 st.markdown("---")
 
 # 데이터 로딩 함수 (캐싱)
@@ -158,20 +158,23 @@ def calculate_rush_hour_ranking(df, selected_day, rush_hour_type="morning", top_
     Args:
         df: 전체 데이터프레임
         selected_day: 선택된 요일
-        rush_hour_type: "morning" 또는 "evening"
+        rush_hour_type: "morning", "evening", 또는 "all_day"
         top_n: 상위 몇 개 역
     
     Returns:
         ranking_df: 랭킹 데이터프레임
     """
     # 시간대 선택
-    time_labels = RUSH_HOUR_MORNING if rush_hour_type == "morning" else RUSH_HOUR_EVENING
-    
-    # 해당 시간대 데이터 필터링
-    rush_df = df[
-        (df['day_type'] == selected_day) &
-        (df['time_label'].isin(time_labels))
-    ]
+    if rush_hour_type == "all_day":
+        # 주말: 전체 시간대 데이터 사용
+        rush_df = df[df['day_type'] == selected_day]
+    else:
+        # 평일: 출퇴근 시간대만 사용
+        time_labels = RUSH_HOUR_MORNING if rush_hour_type == "morning" else RUSH_HOUR_EVENING
+        rush_df = df[
+            (df['day_type'] == selected_day) &
+            (df['time_label'].isin(time_labels))
+        ]
     
     if rush_df.empty:
         return pd.DataFrame()
@@ -553,21 +556,27 @@ def main():
             key="ranking_day_select"
         )
         
-        # 토글: 출근/퇴근
-        col_toggle, col_info = st.columns([1, 3])
-        
-        with col_toggle:
-            rush_hour_option = st.radio(
-                "시간대 선택",
-                options=["출근 (07:30-09:30)", "퇴근 (17:30-19:30)"],
-                index=0,
-                horizontal=True
-            )
+        # 평일/주말 구분
+        if ranking_day == "평일":
+            # 평일: 출근/퇴근 시간대 선택
+            col_toggle, col_info = st.columns([1, 3])
             
-            rush_type = "morning" if "출근" in rush_hour_option else "evening"
-        
-        with col_info:
-            st.info(f"💡 {rush_hour_option} 시간대에서 가장 혼잡한 역 Top 10을 표시합니다.")
+            with col_toggle:
+                rush_hour_option = st.radio(
+                    "시간대 선택",
+                    options=["출근 (07:30-09:30)", "퇴근 (17:30-19:30)"],
+                    index=0,
+                    horizontal=True
+                )
+                
+                rush_type = "morning" if "출근" in rush_hour_option else "evening"
+            
+            with col_info:
+                st.info(f"💡 {rush_hour_option} 시간대에서 가장 혼잡한 역을 표시합니다.")
+        else:
+            # 주말: 전체 시간대
+            rush_type = "all_day"
+            st.info(f"💡 전체 시간대 ({ranking_day})의 평균 혼잡도를 기준으로 랭킹을 표시합니다.")
         
         # Top N 슬라이더
         top_n = st.slider(
@@ -647,6 +656,73 @@ def main():
                 )
                 
                 st.plotly_chart(fig_bar, use_container_width=True)
+                
+                # 각 역별 상세 차트 (Expander)
+                st.markdown("---")
+                st.markdown("### 📈 역별 상세 혼잡도 차트")
+                st.caption("역을 펼쳐서 시간대별 혼잡도 추이를 확인하세요")
+                
+                for idx, row in ranking_df.iterrows():
+                    with st.expander(f"{row['rank']}위. {row['station_name']} ({row['line']} {row['direction_display']}) - 평균 {row['avg_crowding']:.1f}"):
+                        # 해당 역의 시간대별 데이터 가져오기
+                        station_detail_df = df[
+                            (df['day_type'] == ranking_day) &
+                            (df['line'] == row['line']) &
+                            (df['station_name'] == row['station_name']) &
+                            (df['direction'] == row['direction'])
+                        ].sort_values('time_order')
+                        
+                        if not station_detail_df.empty:
+                            # 라인차트 생성
+                            fig_station = px.line(
+                                station_detail_df,
+                                x='time_label',
+                                y='crowding',
+                                markers=True,
+                                title=f"{row['station_name']}역 시간대별 혼잡도 ({ranking_day})",
+                                labels={'time_label': '시간대', 'crowding': '혼잡도'}
+                            )
+                            
+                            # 차트 스타일
+                            fig_station.update_traces(
+                                line_color='#1f77b4',
+                                marker=dict(size=6),
+                                hovertemplate='<b>시간대</b>: %{x}<br><b>혼잡도</b>: %{y:.1f}<extra></extra>'
+                            )
+                            
+                            # 출퇴근 시간대 강조 (평일인 경우만)
+                            if ranking_day == "평일":
+                                fig_station.add_vrect(
+                                    x0="07:30", x1="09:30",
+                                    fillcolor="rgba(0, 100, 255, 0.1)",
+                                    layer="below",
+                                    line_width=0,
+                                    annotation_text="출근",
+                                    annotation_position="top left",
+                                    annotation=dict(font_size=10, font_color="blue")
+                                )
+                                fig_station.add_vrect(
+                                    x0="17:30", x1="19:30",
+                                    fillcolor="rgba(255, 100, 0, 0.1)",
+                                    layer="below",
+                                    line_width=0,
+                                    annotation_text="퇴근",
+                                    annotation_position="top left",
+                                    annotation=dict(font_size=10, font_color="red")
+                                )
+                            
+                            fig_station.update_layout(
+                                height=300,
+                                xaxis_title="시간대",
+                                yaxis_title="혼잡도",
+                                hovermode='x unified',
+                                xaxis=dict(tickangle=-45, tickmode='linear'),
+                                yaxis=dict(rangemode='tozero')
+                            )
+                            
+                            st.plotly_chart(fig_station, use_container_width=True)
+                        else:
+                            st.warning("⚠️ 데이터가 없습니다.")
         
         except Exception as e:
             st.error(f"❌ 랭킹 생성 중 오류 발생: {e}")
@@ -710,7 +786,7 @@ def main():
             sort_by = sort_options[sort_label]
         
         with col_info:
-            st.info("💡 히트맵에서 특정 역을 확인하려면 아래에서 역을 선택하면 위의 라인차트가 자동으로 업데이트됩니다.")
+            pass  # 메시지 제거됨
         
         # 히트맵 데이터 준비
         try:
@@ -743,8 +819,8 @@ def main():
                     hovertemplate='<b>역</b>: %{y}<br><b>시간대</b>: %{x}<br><b>혼잡도</b>: %{z:.1f}<extra></extra>'
                 )
                 
-                # 높이를 역 수에 비례하여 조정 (최소 300px, 역당 약 18px)
-                heatmap_height = max(300, len(station_order) * 18)
+                # 높이를 역 수에 비례하여 조정 (최소 400px, 역당 약 40px)
+                heatmap_height = max(400, len(station_order) * 40)
                 
                 fig_heatmap.update_layout(
                     height=heatmap_height,
